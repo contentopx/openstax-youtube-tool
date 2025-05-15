@@ -1,0 +1,115 @@
+#!/bin/bash
+# 🧠 Shell script to upload OpenStax videos to YouTube with video mapping CSV
+
+# Define paths
+DOCS_DIR="/Users/rs162/Documents"
+INPUT_CSV="$DOCS_DIR/K12_YouTube_Ratna_upload_Part3.csv"
+OUTPUT_CSV="$DOCS_DIR/K12_YouTube_Ratna_upload_updated.csv"
+VIDEO_MAPPING_CSV="$DOCS_DIR/videomapping.csv"
+CLIENT_SECRETS="$DOCS_DIR/client_secret_ratna.json"
+
+echo "🚀 Starting YouTube video upload process at 6:49 PM EDT, May 14, 2025..."
+echo "📂 Working directory: $DOCS_DIR"
+echo "📄 Input CSV: $INPUT_CSV"
+echo "📄 Output CSV: $OUTPUT_CSV"
+echo "📄 Video Mapping CSV: $VIDEO_MAPPING_CSV"
+echo "🔑 Client secrets file: $CLIENT_SECRETS"
+
+# Check if input files exist
+if [ ! -f "$INPUT_CSV" ]; then
+    echo "❌ Error: Input CSV file $INPUT_CSV not found!"
+    exit 1
+fi
+
+if [ ! -f "$CLIENT_SECRETS" ]; then
+    echo "❌ Error: Client secrets file $CLIENT_SECRETS not found!"
+    exit 1
+fi
+
+# Run the Python script
+python3 - <<EOF
+import csv
+import os
+import requests
+import sys
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+# Define paths and constants
+input_csv = "${INPUT_CSV}"
+output_csv = "${OUTPUT_CSV}"
+video_mapping_csv = "${VIDEO_MAPPING_CSV}"
+client_secrets_file = "${CLIENT_SECRETS}"
+SCOPES = ['https://www.googleapis.com/auth/youtube.upload', 'https://www.googleapis.com/auth/youtube']
+
+# Authenticate and build YouTube service
+flow = InstalledAppFlow.from_client_secrets_file(client_secrets_file, SCOPES)
+creds = flow.run_local_server(port=0)
+youtube = build('youtube', 'v3', credentials=creds)
+
+# Dictionary to track processed video links
+processed_videos = {}
+
+# Function to check if playlist exists
+def check_playlist(youtube, playlist_title):
+    page_token = None
+    while True:
+        request = youtube.playlists().list(
+            part="snippet,status",
+            maxResults=50,
+            mine=True,
+            pageToken=page_token
+        )
+        response = request.execute()
+        for item in response.get('items', []):
+            status = item.get('status', {})
+            privacy_status = status.get('privacyStatus', 'private')
+            if item['snippet']['title'] == playlist_title and privacy_status == 'public':
+                return item['id']
+        page_token = response.get('nextPageToken')
+        if not page_token:
+            break
+    return None
+
+# Function to update CSV with selected playlist, handling encoding issues
+def update_csv_playlist(input_csv, selected_playlist):
+    rows = []
+    encodings = ['utf-8', 'latin-1']
+    for encoding in encodings:
+        try:
+            with open(input_csv, 'r', newline='', encoding=encoding) as csvfile:
+                reader = csv.DictReader(csvfile)
+                fieldnames = reader.fieldnames
+                for row in reader:
+                    row['Playlist'] = selected_playlist
+                    row.pop('Tags', None)
+                    rows.append(row)
+            with open(input_csv, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=[f for f in fieldnames if f != 'Tags'])
+                writer.writeheader()
+                writer.writerows(rows)
+            print(f"📝 Successfully updated CSV with encoding: {encoding}")
+            break
+        except UnicodeDecodeError as e:
+            if encoding == encodings[-1]:
+                print(f"❌ Error: Failed to decode CSV with available encodings: {e}")
+                sys.exit(1)
+            print(f"⚠️ Trying next encoding due to: {e}")
+            continue
+
+# Function to download OpenStax video (if direct link or redirected)
+def download_openstax_video(url, output_path):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(url, headers=headers, stream=True, allow_redirects=True)
+    if response.status_code == 200 and 'video' in response.headers.get('Content-Type', ''):
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        return output_path
+    return None
+
+# Function to upload video to YouTube with public status
+def upload_video(file_path, title, description_with_tags, tags
